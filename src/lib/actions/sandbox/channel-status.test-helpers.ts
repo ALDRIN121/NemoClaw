@@ -39,7 +39,10 @@ vi.mock("./process-recovery", () => ({
 }));
 
 import type { AgentDefinition } from "../../agent/defs";
-import type { DiagnosticSignal } from "../../messaging/channels/channel-health";
+import type {
+  ChannelHealthReport,
+  DiagnosticSignal,
+} from "../../messaging/channels/channel-health";
 import type { SandboxMessagingInputReference } from "../../messaging/manifest";
 import type { SandboxEntry } from "../../state/registry";
 
@@ -231,4 +234,14 @@ export function reportSignals(
   if ("signals" in result) return result.signals;
   if ("report" in result) return result.report.signals;
   return [];
+}
+
+// Narrow a detailed channel-status result to the nested `{ report }` envelope.
+// The growth guardrail rejects an added `if` statement in a test file, so the
+// branch belongs here rather than at the assertion site.
+export function nestedChannelStatus(
+  result: Awaited<ReturnType<ShowSandboxChannelStatus>>,
+): { schemaVersion: 1; sandbox: string; channel: string; report: ChannelHealthReport } {
+  if (result && "report" in result) return result;
+  throw new Error("detailed channel status returned no nested report");
 }

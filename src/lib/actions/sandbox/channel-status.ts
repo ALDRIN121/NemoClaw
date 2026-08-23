@@ -84,6 +84,14 @@ export type ChannelStatusOptions = {
   deps?: StatusDeps;
 };
 
+type ChannelStatusBasicReport = {
+  schemaVersion: 1;
+  sandbox: string;
+  channel: string;
+  verdict: "info";
+  signals: DiagnosticSignal[];
+};
+
 type ChannelStatusSingleReport =
   | {
       schemaVersion: 1;
@@ -91,13 +99,7 @@ type ChannelStatusSingleReport =
       channel: string;
       report: ChannelHealthReport;
     }
-  | {
-      schemaVersion: 1;
-      sandbox: string;
-      channel: string;
-      verdict: "info";
-      signals: DiagnosticSignal[];
-    };
+  | ChannelStatusBasicReport;
 
 type ChannelStatusSnapshotReport =
   | ChannelStatusSingleReport
@@ -280,6 +282,9 @@ export function exitCodeFor(report: ChannelStatusReport): number {
     switch (report.report.verdict) {
       case "healthy":
       case "unknown":
+      // A paused channel reports "info" without a live probe. No status hook
+      // emits "info", so this case only accepts that skipped-probe report.
+      case "info":
         return 0;
       default:
         return 1;
@@ -295,7 +300,7 @@ function buildBasicChannelReport(
   deps: Required<StatusDeps>,
   diagnostic: MessagingChannelDiagnosticSpec,
   options: { readonly includeDeepDiagnostics?: boolean; readonly channelPaused?: boolean } = {},
-): ChannelStatusSingleReport {
+): ChannelStatusBasicReport {
   const entry = deps.getSandbox(sandboxName);
   const enabled = registry.getConfiguredMessagingChannelsFromEntry(entry).includes(channelName);
   const disabled = registry.getDisabledMessagingChannelsFromEntry(entry).includes(channelName);
@@ -494,9 +499,33 @@ function collectChannelReport(
         )
       : undefined;
   if (!healthReport) {
-    return buildBasicChannelReport(sandboxName, channelName, agent, collectionDeps, diagnostic, {
-      channelPaused: channelIsPaused,
-    });
+    const basicReport = buildBasicChannelReport(
+      sandboxName,
+      channelName,
+      agent,
+      collectionDeps,
+      diagnostic,
+      { channelPaused: channelIsPaused },
+    );
+    if (!channelIsPaused || !hasHealthHook) return basicReport;
+    // A paused probe-capable channel keeps the nested envelope so detailed
+    // status has one schema-version-1 shape (#10015). `readiness` stays absent,
+    // so waitForChannelReadiness still applies pausedReadiness or
+    // readiness_not_supported.
+    return {
+      schemaVersion: 1,
+      sandbox: sandboxName,
+      channel: channelName,
+      report: {
+        schemaVersion: 1,
+        channel: channelName,
+        agent: agent.name,
+        verdict: basicReport.verdict,
+        probedAt: collectionDeps.now().toISOString(),
+        signals: basicReport.signals,
+        hints: [],
+      },
+    };
   }
   const configSignals = buildConfigStatusSignals(
     sandboxName,

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   entry,
   makeDeps,
+  nestedChannelStatus,
+  reportSignals,
   showSandboxChannelStatus,
   TELEGRAM_PROBE_UNKNOWN_STDOUT,
 } from "./channel-status.test-helpers";
@@ -382,15 +384,12 @@ describe("showSandboxChannelStatus (whatsapp)", () => {
     deps.execSandbox = execSpy as unknown as typeof deps.execSandbox;
     const result = await showSandboxChannelStatus("alpha", { deps, channel: "whatsapp" });
     expect(execSpy).not.toHaveBeenCalled();
-    expect(result && "verdict" in result && result.verdict).toBe("info");
+    expect(result && "report" in result && result.report.verdict).toBe("info");
     const dump = out_lines.join("\n");
     expect(dump).toMatch(/registered but currently paused/);
     // The paused fallback must not claim it is the summary view nor tell the
     // operator to rerun the --channel command they are already running (#6887).
-    const runtime =
-      result && "signals" in result
-        ? result.signals.find((s) => s.label === "Runtime health")
-        : undefined;
+    const runtime = reportSignals(result).find((s) => s.label === "Runtime health");
     expect(runtime?.detail).toBe("not checked — whatsapp is currently paused");
     expect(runtime?.hint).toBeUndefined();
   });
@@ -411,12 +410,55 @@ describe("showSandboxChannelStatus (whatsapp)", () => {
       .map((call) => String((call as unknown[])[1]))
       .join("\n");
     expect(probeCommands).not.toMatch(/gateway\.log|pgrep/);
-    const runtime =
-      result && "signals" in result
-        ? result.signals.find((s) => s.label === "Runtime health")
-        : undefined;
+    const runtime = reportSignals(result).find((s) => s.label === "Runtime health");
     expect(runtime?.detail).toBe("not checked — telegram is currently paused");
     expect(runtime?.hint).toBeUndefined();
+  });
+
+  it("returns the nested detailed-status envelope for a paused telegram channel (#10015)", async () => {
+    // Detailed status for a probe-capable channel must use one schema-version-1
+    // shape. Before this guard a paused channel returned top-level `verdict` and
+    // `signals`, so a caller that accepted the nested contract could not read it.
+    const execSpy = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
+    const { deps } = makeDeps({
+      exec: () => ({ status: 0, stdout: "", stderr: "" }),
+      sandbox: entry(["telegram"], ["telegram"]),
+    });
+    deps.execSandbox = execSpy as unknown as typeof deps.execSandbox;
+    const result = await showSandboxChannelStatus("alpha", {
+      deps,
+      channel: "telegram",
+      asJson: true,
+      quietJson: true,
+    });
+    const status = nestedChannelStatus(result);
+    expect(status.schemaVersion).toBe(1);
+    expect(status.sandbox).toBe("alpha");
+    expect(status.channel).toBe("telegram");
+    expect(status.report.channel).toBe("telegram");
+    expect(status.report.agent).toBe("openclaw");
+    expect(status.report.verdict).toBe("info");
+    expect(typeof status.report.probedAt).toBe("string");
+    expect(status.report.hints).toEqual([]);
+    expect(reportSignals(result).map((s) => s.label)).toContain("Runtime health");
+    expect((await import("./channel-status")).exitCodeFor(status)).toBe(0);
+  });
+
+  it("keeps the flat report for a paused channel that has no status hook (#10015)", async () => {
+    // Only a probe-capable channel gains the nested envelope. A channel without
+    // a status hook keeps the flat report, so the summary view is unaffected.
+    const { deps } = makeDeps({
+      exec: () => ({ status: 0, stdout: "", stderr: "" }),
+      sandbox: entry(["discord"], ["discord"]),
+    });
+    const result = await showSandboxChannelStatus("alpha", {
+      deps,
+      channel: "discord",
+      asJson: true,
+      quietJson: true,
+    });
+    expect(result && "verdict" in result).toBe(true);
+    expect(result && (await import("./channel-status")).exitCodeFor(result)).toBe(0);
   });
 });
 
