@@ -58,6 +58,7 @@ import {
   assertHermesPortableAgentLifecycleAuthority,
   assertHermesPortableCommandSupported,
   assertHermesPortableCommandUnavailable,
+  classifyRegisteredPortableAgentLifecycle,
   HERMES_PORTABLE_UNSUPPORTED_COMMAND_MESSAGE,
   inspectPortableAgentReceiptDisposition,
   qualifyHermesPortableAcceptedReadinessAuthority,
@@ -153,6 +154,53 @@ describe("portable agent lifecycle dispatch", () => {
       (_sandboxName, _stateDir, _snapshot, assertOperatingAuthority) => assertOperatingAuthority,
     );
     mocks.readRegistry.mockReturnValue(null);
+  });
+
+  it.each([
+    ["hermes", "hermes"],
+    ["openclaw", "openclaw"],
+  ] as const)("classifies recorded %s Portable authority once", (agent, profile) => {
+    expect(
+      classifyRegisteredPortableAgentLifecycle(
+        "alpha",
+        "docker",
+        {
+          ...hermesRegistryEntry(),
+          agent,
+          portableLifecycleProfile: profile,
+        } as never,
+        lifecycleAuthorityDeps,
+      ),
+    ).toEqual({ kind: "portable", agent });
+  });
+
+  it("keeps an ordinary Docker entry on the standard lifecycle", () => {
+    expect(
+      classifyRegisteredPortableAgentLifecycle(
+        "alpha",
+        "docker",
+        {
+          ...hermesRegistryEntry(),
+          agent: "openclaw",
+          portableLifecycleProfile: undefined,
+        } as never,
+        lifecycleAuthorityDeps,
+      ),
+    ).toEqual({ kind: "standard" });
+  });
+
+  it("admits a legacy Hermes entry only through the shared receipt qualifier", () => {
+    const qualifyLegacyHermes = vi.fn(() => true);
+
+    expect(
+      classifyRegisteredPortableAgentLifecycle(
+        "alpha",
+        "docker",
+        { ...hermesRegistryEntry(), portableLifecycleProfile: undefined } as never,
+        { ...lifecycleAuthorityDeps, qualifyLegacyHermes },
+      ),
+    ).toEqual({ kind: "portable", agent: "hermes" });
+    expect(qualifyLegacyHermes).toHaveBeenCalledOnce();
   });
 
   it("directs copied active schema-7 authority to probe instead of migrating on launch (#10423)", () => {
@@ -630,6 +678,7 @@ describe("portable agent lifecycle dispatch", () => {
   });
 });
 
+/** Capture the message a portable command guard refuses with, or an empty string when it does not refuse. */
 function portableRefusalMessage(refuse: () => void): string {
   try {
     refuse();
